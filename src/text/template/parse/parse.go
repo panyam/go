@@ -17,6 +17,7 @@ import (
 )
 
 type Block interface {
+	Builtins() map[string]any
 	Parse(tree *Tree, pos Pos, line int, pipe *PipeNode, children *ListNode) Node
 }
 
@@ -323,7 +324,7 @@ func IsEmptyTree(n Node) bool {
 // as itemList except it also parses {{define}} actions.
 // It runs to EOF.
 func (t *Tree) parse() {
-	t.Root = t.newList(t.peek().pos)
+	t.Root = t.NewList(t.peek().pos)
 	for t.peek().typ != itemEOF {
 		if t.peek().typ == itemLeftDelim {
 			delim := t.next()
@@ -374,7 +375,7 @@ func (t *Tree) parseDefinition() {
 //
 // Terminates at {{end}} or {{else}}, returned separately.
 func (t *Tree) itemList() (list *ListNode, next Node) {
-	list = t.newList(t.peekNonSpace().pos)
+	list = t.NewList(t.peekNonSpace().pos)
 	for t.peekNonSpace().typ != itemEOF {
 		n := t.textOrAction()
 		switch n.Type() {
@@ -393,13 +394,13 @@ func (t *Tree) itemList() (list *ListNode, next Node) {
 func (t *Tree) textOrAction() Node {
 	switch token := t.nextNonSpace(); token.typ {
 	case itemText:
-		return t.newText(token.pos, token.val)
+		return t.NewText(token.pos, token.val)
 	case itemLeftDelim:
 		t.actionLine = token.line
 		defer t.clearActionLine()
 		return t.action()
 	case itemComment:
-		return t.newComment(token.pos, token.val)
+		return t.NewComment(token.pos, token.val)
 	default:
 		t.unexpected(token, "input")
 	}
@@ -447,7 +448,7 @@ func (t *Tree) action() (n Node) {
 	t.backup()
 	token := t.peek()
 	// Do not pop variables; they persist until "end".
-	return t.newAction(token.pos, token.line, t.pipeline("command", itemRightDelim))
+	return t.NewAction(token.pos, token.line, t.pipeline("command", itemRightDelim))
 }
 
 // Break:
@@ -462,7 +463,7 @@ func (t *Tree) breakControl(pos Pos, line int) Node {
 	if t.rangeDepth == 0 {
 		t.errorf("{{break}} outside {{range}}")
 	}
-	return t.newBreak(pos, line)
+	return t.NewBreak(pos, line)
 }
 
 // Continue:
@@ -477,7 +478,7 @@ func (t *Tree) continueControl(pos Pos, line int) Node {
 	if t.rangeDepth == 0 {
 		t.errorf("{{continue}} outside {{range}}")
 	}
-	return t.newContinue(pos, line)
+	return t.NewContinue(pos, line)
 }
 
 // Pipeline:
@@ -485,7 +486,7 @@ func (t *Tree) continueControl(pos Pos, line int) Node {
 //	declarations? command ('|' command)*
 func (t *Tree) pipeline(context string, end itemType) (pipe *PipeNode) {
 	token := t.peekNonSpace()
-	pipe = t.newPipeline(token.pos, token.line, nil)
+	pipe = t.NewPipeline(token.pos, token.line, nil)
 	// Are there declarations or assignments?
 decls:
 	if v := t.peekNonSpace(); v.typ == itemVariable {
@@ -500,11 +501,11 @@ decls:
 		case next.typ == itemAssign, next.typ == itemDeclare:
 			pipe.IsAssign = next.typ == itemAssign
 			t.nextNonSpace()
-			pipe.Decl = append(pipe.Decl, t.newVariable(v.pos, v.val))
+			pipe.Decl = append(pipe.Decl, t.NewVariable(v.pos, v.val))
 			t.vars = append(t.vars, v.val)
 		case next.typ == itemChar && next.val == ",":
 			t.nextNonSpace()
-			pipe.Decl = append(pipe.Decl, t.newVariable(v.pos, v.val))
+			pipe.Decl = append(pipe.Decl, t.NewVariable(v.pos, v.val))
 			t.vars = append(t.vars, v.val)
 			if context == "range" && len(pipe.Decl) < 2 {
 				switch t.peekNonSpace().typ {
@@ -595,11 +596,11 @@ func (t *Tree) parseControl(context string) (pos Pos, line int, pipe *PipeNode, 
 		// the subsequent{{end}} is assumed. This technique works even for long if-else-if chains.
 		if context == "if" && t.peek().typ == itemIf {
 			t.next() // Consume the "if" token.
-			elseList = t.newList(next.Position())
+			elseList = t.NewList(next.Position())
 			elseList.append(t.ifControl())
 		} else if context == "with" && t.peek().typ == itemWith {
 			t.next()
-			elseList = t.newList(next.Position())
+			elseList = t.NewList(next.Position())
 			elseList.append(t.withControl())
 		} else {
 			elseList, next = t.itemList()
@@ -618,7 +619,7 @@ func (t *Tree) parseControl(context string) (pos Pos, line int, pipe *PipeNode, 
 //
 // If keyword is past.
 func (t *Tree) ifControl() Node {
-	return t.newIf(t.parseControl("if"))
+	return t.NewIf(t.parseControl("if"))
 }
 
 // Range:
@@ -628,7 +629,7 @@ func (t *Tree) ifControl() Node {
 //
 // Range keyword is past.
 func (t *Tree) rangeControl() Node {
-	r := t.newRange(t.parseControl("range"))
+	r := t.NewRange(t.parseControl("range"))
 	return r
 }
 
@@ -639,7 +640,7 @@ func (t *Tree) rangeControl() Node {
 //
 // If keyword is past.
 func (t *Tree) withControl() Node {
-	return t.newWith(t.parseControl("with"))
+	return t.NewWith(t.parseControl("with"))
 }
 
 // End:
@@ -648,7 +649,7 @@ func (t *Tree) withControl() Node {
 //
 // End keyword is past.
 func (t *Tree) endControl() Node {
-	return t.newEnd(t.expect(itemRightDelim, "end").pos)
+	return t.NewEnd(t.expect(itemRightDelim, "end").pos)
 }
 
 // Else:
@@ -662,10 +663,10 @@ func (t *Tree) elseControl() Node {
 	// treated as "{{else}}{{if ..." and "{{else}}{{with ...".
 	// So return the else node here.
 	if peek.typ == itemIf || peek.typ == itemWith {
-		return t.newElse(peek.pos, peek.line)
+		return t.NewElse(peek.pos, peek.line)
 	}
 	token := t.expect(itemRightDelim, "else")
-	return t.newElse(token.pos, token.line)
+	return t.NewElse(token.pos, token.line)
 }
 
 // Block:
@@ -695,7 +696,7 @@ func (t *Tree) blockControl() Node {
 	block.add()
 	block.stopParse()
 
-	return t.newTemplate(token.pos, token.line, name, pipe)
+	return t.NewTemplate(token.pos, token.line, name, pipe)
 }
 
 // Template:
@@ -714,7 +715,7 @@ func (t *Tree) templateControl() Node {
 		// Do not pop variables; they persist until "end".
 		pipe = t.pipeline(context, itemRightDelim)
 	}
-	return t.newTemplate(token.pos, token.line, name, pipe)
+	return t.NewTemplate(token.pos, token.line, name, pipe)
 }
 
 func (t *Tree) parseTemplateName(token item, context string) (name string) {
@@ -738,7 +739,7 @@ func (t *Tree) parseTemplateName(token item, context string) (name string) {
 // space-separated arguments up to a pipeline character or right delimiter.
 // we consume the pipe character but leave the right delim to terminate the action.
 func (t *Tree) command() *CommandNode {
-	cmd := t.newCommand(t.peekNonSpace().pos)
+	cmd := t.NewCommand(t.peekNonSpace().pos)
 	for {
 		t.peekNonSpace() // skip leading spaces.
 		operand := t.operand()
@@ -776,7 +777,7 @@ func (t *Tree) operand() Node {
 		return nil
 	}
 	if t.peek().typ == itemField {
-		chain := t.newChain(t.peek().pos, node)
+		chain := t.NewChain(t.peek().pos, node)
 		for t.peek().typ == itemField {
 			chain.Add(t.next().val)
 		}
@@ -787,9 +788,9 @@ func (t *Tree) operand() Node {
 		// More complex error cases will have to be handled at execution time.
 		switch node.Type() {
 		case NodeField:
-			node = t.newField(chain.Position(), chain.String())
+			node = t.NewField(chain.Position(), chain.String())
 		case NodeVariable:
-			node = t.newVariable(chain.Position(), chain.String())
+			node = t.NewVariable(chain.Position(), chain.String())
 		case NodeBool, NodeString, NodeNumber, NodeNil, NodeDot:
 			t.errorf("unexpected . after term %q", node.String())
 		default:
@@ -819,17 +820,17 @@ func (t *Tree) term() Node {
 		}
 		return NewIdentifier(token.val).SetTree(t).SetPos(token.pos)
 	case itemDot:
-		return t.newDot(token.pos)
+		return t.NewDot(token.pos)
 	case itemNil:
-		return t.newNil(token.pos)
+		return t.NewNil(token.pos)
 	case itemVariable:
 		return t.useVar(token.pos, token.val)
 	case itemField:
-		return t.newField(token.pos, token.val)
+		return t.NewField(token.pos, token.val)
 	case itemBool:
-		return t.newBool(token.pos, token.val == "true")
+		return t.NewBool(token.pos, token.val == "true")
 	case itemCharConstant, itemComplex, itemNumber:
-		number, err := t.newNumber(token.pos, token.val, token.typ)
+		number, err := t.NewNumber(token.pos, token.val, token.typ)
 		if err != nil {
 			t.error(err)
 		}
@@ -841,7 +842,7 @@ func (t *Tree) term() Node {
 		if err != nil {
 			t.error(err)
 		}
-		return t.newString(token.pos, token.val, s)
+		return t.NewString(token.pos, token.val, s)
 	}
 	t.backup()
 	return nil
@@ -874,7 +875,7 @@ func (t *Tree) popVars(n int) {
 // useVar returns a node for a variable reference. It errors if the
 // variable is not defined.
 func (t *Tree) useVar(pos Pos, name string) Node {
-	v := t.newVariable(pos, name)
+	v := t.NewVariable(pos, name)
 	for _, varName := range t.vars {
 		if varName == v.Ident[0] {
 			return v
