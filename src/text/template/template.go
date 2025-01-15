@@ -19,9 +19,10 @@ type common struct {
 	// We use two maps, one for parsing and one for execution.
 	// This separation makes the API cleaner since it doesn't
 	// expose reflection to the client.
-	muFuncs    sync.RWMutex // protects parseFuncs and execFuncs
-	parseFuncs FuncMap
-	execFuncs  map[string]reflect.Value
+	muFuncs     sync.RWMutex // protects parseBlocks, parseFuncs and execFuncs
+	parseFuncs  FuncMap
+	execFuncs   map[string]reflect.Value
+	parseBlocks parse.BlockMap
 }
 
 // Template is the representation of a parsed template. The *parse.Tree
@@ -74,6 +75,7 @@ func (t *Template) init() {
 		c.tmpl = make(map[string]*Template)
 		c.parseFuncs = make(FuncMap)
 		c.execFuncs = make(map[string]reflect.Value)
+		c.parseBlocks = make(parse.BlockMap)
 		t.common = c
 	}
 }
@@ -103,6 +105,7 @@ func (t *Template) Clone() (*Template, error) {
 	}
 	t.muFuncs.RLock()
 	defer t.muFuncs.RUnlock()
+	maps.Copy(nt.parseBlocks, t.parseBlocks)
 	maps.Copy(nt.parseFuncs, t.parseFuncs)
 	maps.Copy(nt.execFuncs, t.execFuncs)
 	return nt, nil
@@ -204,7 +207,13 @@ func (t *Template) Lookup(name string) *Template {
 func (t *Template) Parse(text string) (*Template, error) {
 	t.init()
 	t.muFuncs.RLock()
-	trees, err := parse.Parse(t.name, text, t.leftDelim, t.rightDelim, t.parseFuncs, builtins())
+	var trees map[string]*parse.Tree
+	var err error
+	if t.parseBlocks != nil {
+		trees, err = parse.ParseWithBlocks(t.name, text, t.leftDelim, t.rightDelim, t.parseBlocks, t.parseFuncs, builtins())
+	} else {
+		trees, err = parse.Parse(t.name, text, t.leftDelim, t.rightDelim, t.parseFuncs, builtins())
+	}
 	t.muFuncs.RUnlock()
 	if err != nil {
 		return nil, err
@@ -232,4 +241,22 @@ func (t *Template) associate(new *Template, tree *parse.Tree) bool {
 	}
 	t.tmpl[new.name] = new
 	return true
+}
+
+// Blocks adds the elements of the argument map to the template's action map.
+// It must be called before the template is parsed.
+func (t *Template) Blocks(actionMap parse.BlockMap) *Template {
+	t.init()
+	t.muFuncs.Lock()
+	defer t.muFuncs.Unlock()
+
+	addBlocks(t.parseBlocks, actionMap)
+	return t
+}
+
+// Add all actions in the input 'in' action map to the 'out' output map
+func addBlocks(out, in parse.BlockMap) {
+	for name, fn := range in {
+		out[name] = fn
+	}
 }

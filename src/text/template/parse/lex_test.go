@@ -584,7 +584,7 @@ func TestPos(t *testing.T) {
 func (t *Tree) parseLexer(lex *lexer) (tree *Tree, err error) {
 	defer t.recover(&err)
 	t.ParseName = t.Name
-	t.startParse(nil, lex, map[string]*Tree{})
+	t.startParse(nil, nil, lex, map[string]*Tree{})
 	t.parse()
 	t.add()
 	t.stopParse()

@@ -16,6 +16,16 @@ import (
 	"strings"
 )
 
+type Block interface {
+	Parse(tree *Tree, pos Pos, line int, pipe *PipeNode, children *ListNode) Node
+}
+
+// BlockMap is the type of the map defining the mapping from names to custom Blocks.
+// Note that to preserve secure and escaping behaviour in html templates, Blocks are only
+// limited to parse time rewriting/transformation of the parse tree instead of being used
+// at render time.  Functions serve this purpose (well).
+type BlockMap map[string]Block
+
 // Tree is the representation of a single parsed template.
 type Tree struct {
 	Name      string    // name of the template represented by the tree.
@@ -25,6 +35,7 @@ type Tree struct {
 	text      string    // text parsed to create the template (or its parent)
 	// Parsing only; cleared after parse.
 	funcs      []map[string]any
+	blocks     map[string]Block
 	lex        *lexer
 	token      [3]item // three-token lookahead for parser.
 	peekCount  int
@@ -60,10 +71,14 @@ func (t *Tree) Copy() *Tree {
 // given the specified name. If an error is encountered, parsing stops and an
 // empty map is returned with the error.
 func Parse(name, text, leftDelim, rightDelim string, funcs ...map[string]any) (map[string]*Tree, error) {
+	return ParseWithBlocks(name, text, leftDelim, rightDelim, nil, funcs...)
+}
+
+func ParseWithBlocks(name, text, leftDelim, rightDelim string, blocks map[string]Block, funcs ...map[string]any) (map[string]*Tree, error) {
 	treeSet := make(map[string]*Tree)
-	t := New(name)
+	t := NewWithBlocks(name, blocks)
 	t.text = text
-	_, err := t.Parse(text, leftDelim, rightDelim, treeSet, funcs...)
+	_, err := t.ParseWithBlocks(text, leftDelim, rightDelim, treeSet, blocks, funcs...)
 	return treeSet, err
 }
 
@@ -129,9 +144,14 @@ func (t *Tree) peekNonSpace() item {
 
 // New allocates a new parse tree with the given name.
 func New(name string, funcs ...map[string]any) *Tree {
+	return NewWithBlocks(name, nil, funcs...)
+}
+
+func NewWithBlocks(name string, blocks BlockMap, funcs ...map[string]any) *Tree {
 	return &Tree{
-		Name:  name,
-		funcs: funcs,
+		Name:   name,
+		funcs:  funcs,
+		blocks: blocks,
 	}
 }
 
@@ -217,11 +237,12 @@ func (t *Tree) recover(errp *error) {
 }
 
 // startParse initializes the parser, using the lexer.
-func (t *Tree) startParse(funcs []map[string]any, lex *lexer, treeSet map[string]*Tree) {
+func (t *Tree) startParse(blocks BlockMap, funcs []map[string]any, lex *lexer, treeSet map[string]*Tree) {
 	t.Root = nil
 	t.lex = lex
 	t.vars = []string{"$"}
 	t.funcs = funcs
+	t.blocks = blocks
 	t.treeSet = treeSet
 	lex.options = lexOptions{
 		emitComment: t.Mode&ParseComments != 0,
@@ -235,6 +256,7 @@ func (t *Tree) stopParse() {
 	t.lex = nil
 	t.vars = nil
 	t.funcs = nil
+	t.blocks = nil
 	t.treeSet = nil
 }
 
@@ -243,10 +265,14 @@ func (t *Tree) stopParse() {
 // default ("{{" or "}}") is used. Embedded template definitions are added to
 // the treeSet map.
 func (t *Tree) Parse(text, leftDelim, rightDelim string, treeSet map[string]*Tree, funcs ...map[string]any) (tree *Tree, err error) {
+	return t.ParseWithBlocks(text, leftDelim, rightDelim, treeSet, nil, funcs...)
+}
+
+func (t *Tree) ParseWithBlocks(text, leftDelim, rightDelim string, treeSet map[string]*Tree, blocks BlockMap, funcs ...map[string]any) (tree *Tree, err error) {
 	defer t.recover(&err)
 	t.ParseName = t.Name
 	lexer := lex(t.Name, text, leftDelim, rightDelim)
-	t.startParse(funcs, lexer, treeSet)
+	t.startParse(blocks, funcs, lexer, treeSet)
 	t.text = text
 	t.parse()
 	t.add()
@@ -306,7 +332,7 @@ func (t *Tree) parse() {
 				newT.text = t.text
 				newT.Mode = t.Mode
 				newT.ParseName = t.ParseName
-				newT.startParse(t.funcs, t.lex, t.treeSet)
+				newT.startParse(t.blocks, t.funcs, t.lex, t.treeSet)
 				newT.parseDefinition()
 				continue
 			}
@@ -411,6 +437,12 @@ func (t *Tree) action() (n Node) {
 		return t.templateControl()
 	case itemWith:
 		return t.withControl()
+	default:
+		if block := t.getBlock(token.val); block != nil {
+			pos, line, pipe, children := t.parseTillEnd(token.val)
+			return block.Parse(t, pos, line, pipe, children)
+		}
+		// Custom block
 	}
 	t.backup()
 	token := t.peek()
@@ -519,6 +551,22 @@ func (t *Tree) checkPipeline(pipe *PipeNode, context string) {
 			t.errorf("non executable command in pipeline stage %d", i+2)
 		}
 	}
+}
+
+// When reading a block node, assuming the left delimiter and the node name have been read:
+// {{ <nodename> 	<pipeline> }}
+//
+//	^---- Start of next token
+//
+// reads the pipeline and until the matching "{{ end }}" block as a single node.
+func (t *Tree) parseTillEnd(context string) (pos Pos, line int, pipe *PipeNode, children *ListNode) {
+	defer t.popVars(len(t.vars))
+	pipe = t.pipeline(context, itemRightDelim)
+	list, next := t.itemList()
+	if next.Type() != nodeEnd {
+		t.errorf("unexpected %s in %s", next, context)
+	}
+	return pipe.Position(), pipe.Line, pipe, list
 }
 
 func (t *Tree) parseControl(context string) (pos Pos, line int, pipe *PipeNode, list, elseList *ListNode) {
@@ -638,7 +686,7 @@ func (t *Tree) blockControl() Node {
 	block.text = t.text
 	block.Mode = t.Mode
 	block.ParseName = t.ParseName
-	block.startParse(t.funcs, t.lex, t.treeSet)
+	block.startParse(t.blocks, t.funcs, t.lex, t.treeSet)
 	var end Node
 	block.Root, end = block.itemList()
 	if end.Type() != nodeEnd {
@@ -797,6 +845,12 @@ func (t *Tree) term() Node {
 	}
 	t.backup()
 	return nil
+}
+
+// getBlock returns the block associated with a name or returns nil if it does not exist
+func (t *Tree) getBlock(name string) Block {
+	out, _ := t.blocks[name]
+	return out
 }
 
 // hasFunction reports if a function name exists in the Tree's maps.

@@ -207,6 +207,14 @@ pkg strings, func FieldsSeq(string) iter.Seq[string] #61901
 pkg strings, func Lines(string) iter.Seq[string] #61901
 pkg strings, func SplitAfterSeq(string, string) iter.Seq[string] #61901
 pkg strings, func SplitSeq(string, string) iter.Seq[string] #61901
+# pkg text/template, method (*Template) Blocks(parse.BlockMap) *Template
+# pkg text/template, method (Template) ParseWithBlocks(string, string, string, map[string]*parse.Tree, parse.BlockMap, ...map[string]interface{}) (*parse.Tree, error)
+# pkg text/template/parse, func NewWithBlocks(string, BlockMap, ...map[string]interface{}) *Tree
+# pkg text/template/parse, func ParseWithBlocks(string, string, string, string, map[string]Block, ...map[string]interface{}) (map[string]*Tree, error)
+# pkg text/template/parse, method (*Tree) ParseWithBlocks(string, string, string, map[string]*Tree, BlockMap, ...map[string]interface{}) (*Tree, error)
+# pkg text/template/parse, type Block interface { Parse }
+# pkg text/template/parse, type Block interface, Parse(*Tree, Pos, int, *PipeNode, *ListNode) Node
+# pkg text/template/parse, type BlockMap map[string]Block
 pkg testing, method (*B) Chdir(string) #62516
 pkg testing, method (*B) Context() context.Context #36532
 pkg testing, method (*B) Loop() bool #61515
